@@ -13,55 +13,73 @@ object Main {
   val BustLimit = 21
   val DealerStandLimit = 16
 
-  def sumPoints(hands: Cards): Int = {
-    val (sum, aces) =
-      hands.foldLeft((0, 0)) {
-        case ((s, a), 1) => (s + 1, a + 1)
-        case ((s, a), 11 | 12 | 13) => (s + 10, a)
-        case ((s, a), n) => (s + n, a)
-      }
+  sealed trait Hands {
+    val hands: Cards
 
-    @tailrec
-    def ret(sum: Int, aces: Int): Int =
-      aces match {
-        case 0 => sum
-        case _ if sum + 10 > BustLimit => sum
-        case _ => ret(sum + 10, aces - 1)
-      }
+    type Self
 
-    ret(sum, aces)
+    def draw(rest: Cards): (Self, Cards)
+
+    lazy val sum: Int = {
+      val (sum, aces) =
+        hands.foldLeft((0, 0)) {
+          case ((s, a), 1) => (s + 1, a + 1)
+          case ((s, a), 11 | 12 | 13) => (s + 10, a)
+          case ((s, a), n) => (s + n, a)
+        }
+
+      @tailrec
+      def ret(sum: Int, aces: Int): Int =
+        aces match {
+          case 0 => sum
+          case _ if sum + 10 > BustLimit => sum
+          case _ => ret(sum + 10, aces - 1)
+        }
+
+      ret(sum, aces)
+    }
+
+    lazy val isBust: Boolean = sum > BustLimit
+
+    def showCards(hideFirst: Boolean = false): String = {
+      hands.reverse.map {
+        case 1 => "A"
+        case 11 => "J"
+        case 12 => "Q"
+        case 13 => "K"
+        case n => n.toString
+      } match {
+        case _ :: rest if hideFirst => "*" :: rest
+        case hs => hs
+      }
+    }.mkString(" ")
   }
 
-  def isBust(hands: Cards): Boolean = sumPoints(hands) > BustLimit
+  final case class PlayerHands(hands: Cards) extends Hands {
+    override type Self = PlayerHands
 
-  def playersDraw(hands: Cards, rest: Cards): (Cards, Cards) = {
-    val head :: tail = rest
-    (head :: hands, tail)
+    override def draw(rest: Cards): (Self, Cards) = {
+      val head :: tail = rest
+      (PlayerHands(head :: hands), tail)
+    }
   }
 
-  def isDealerStand(hands: Cards): Boolean = sumPoints(hands) > DealerStandLimit
+  final case class DealerHands(hands: Cards) extends Hands {
+    override type Self = DealerHands
 
-  def dealersDraw(hands: Cards, rest: Cards): (Cards, Cards) =
-    if (isDealerStand(hands))
-      (hands, rest)
-    else
-      playersDraw(hands, rest)
+    lazy val isStand: Boolean = sum > DealerStandLimit
+
+    override def draw(rest: Cards): (Self, Cards) =
+      if (isStand)
+        (this, rest)
+      else {
+        val head :: tail = rest
+        (DealerHands(head :: hands), tail)
+      }
+  }
 
   def youWin = println("You win!")
   def youLose = println("You lose!")
-
-  def showCards(hands: Cards, hideFirst: Boolean = false): String = {
-    hands.reverse.map {
-      case 1 => "A"
-      case 11 => "J"
-      case 12 => "Q"
-      case 13 => "K"
-      case n => n.toString
-    } match {
-      case _ :: rest if hideFirst => "*" :: rest
-      case hs => hs
-    }
-  }.mkString(" ")
 
   @tailrec
   def getAction: Status = {
@@ -74,44 +92,44 @@ object Main {
   }
 
   @tailrec
-  def game(status: Status, playerHands: Cards, dealerHands: Cards, rest: Cards, isFirst: Boolean = false): Unit = {
+  def game(status: Status, playerHands: PlayerHands, dealerHands: DealerHands, rest: Cards, isFirst: Boolean = false): Unit = {
 
-    lazy val isGameEnd = status == Stand && isDealerStand(dealerHands)
+    lazy val isGameEnd = status == Stand && dealerHands.isStand
 
-    println(s"dealer: ${showCards(dealerHands, isFirst)}")
-    println(s"   you: ${showCards(playerHands)}")
+    println(s"dealer: ${dealerHands.showCards(isFirst)}")
+    println(s"   you: ${playerHands.showCards()}")
 
-    (isBust(playerHands), isBust(dealerHands)) match {
+    (playerHands.isBust, dealerHands.isBust) match {
       case (false, true) =>
         youWin
       case (true, _) =>
         youLose
-      case _ if isGameEnd && sumPoints(playerHands) > sumPoints(dealerHands) =>
+      case _ if isGameEnd && playerHands.sum > dealerHands.sum =>
         youWin
       case _ if isGameEnd =>
         youLose
       case _ if status == Stand =>
-        val (dHands, rest1) = dealersDraw(dealerHands, rest)
+        val (dHands, rest1) = dealerHands.draw(rest)
         game(status, playerHands, dHands, rest1)
-      case _ if sumPoints(playerHands) == BustLimit =>
+      case _ if playerHands.sum == BustLimit =>
         game(Stand, playerHands, dealerHands, rest)
-      case _ if isDealerStand(dealerHands) && sumPoints(playerHands) > sumPoints(dealerHands) =>
+      case _ if dealerHands.isStand && playerHands.sum > dealerHands.sum =>
         youWin
       case _ =>
-        getAction match {
-          case Hit =>
-            val (pHands, rest1) = playersDraw(playerHands, rest)
-            val (dHands, rest2) = dealersDraw(dealerHands, rest1)
-            game(Hit, pHands, dHands, rest2)
-          case Stand =>
-            val (dHands, rest1) = dealersDraw(dealerHands, rest)
-            game(Stand, playerHands, dHands, rest1)
-        }
+        val (action, pHands, rest1) =
+          if (getAction == Hit) {
+            val (pHands, rest1) = playerHands.draw(rest)
+            (Hit, pHands, rest1)
+          } else
+            (Stand, playerHands, rest)
+
+        val (dHands, rest2) = dealerHands.draw(rest1)
+        game(action, pHands, dHands, rest2)
     }
   }
 
   def main(args: Array[String]): Unit = {
     val d1 :: d2 :: p1 :: p2 :: rest = scala.util.Random.shuffle(for (_ <- 1 to 4; i <- 1 to 13) yield i).toList
-    game(Hit, d1 :: d2 :: Nil, p1 :: p2 :: Nil, rest, true)
+    game(Hit, PlayerHands(d1 :: d2 :: Nil), DealerHands(p1 :: p2 :: Nil), rest, true)
   }
 }
